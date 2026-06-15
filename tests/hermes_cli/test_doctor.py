@@ -331,7 +331,10 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
 
     real_which = doctor_mod.shutil.which
 
-    def fake_which(cmd):
+    def fake_which(cmd, path=None):
+        # `path=` kwarg tolerance: doctor.py's agent-browser discovery
+        # uses shutil.which with an extended PATH. Tests don't care
+        # about the extended PATH; just forward the cmd.
         if cmd in {"docker", "node", "npm"}:
             return None
         return real_which(cmd)
@@ -641,7 +644,7 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-    monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: "/data/data/com.termux/files/usr/bin/node" if cmd in {"node", "npm"} else None)
+    monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd, path=None: "/data/data/com.termux/files/usr/bin/node" if cmd in {"node", "npm"} else None)
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: (["terminal"], [{"name": "browser", "env_vars": [], "tools": ["browser_navigate"]}]),
@@ -879,7 +882,7 @@ class TestGitHubTokenCheck:
         # Mock gh to return success
         import shutil
         real_which = shutil.which
-        def mock_which(cmd):
+        def mock_which(cmd, path=None):
             return "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd)
         monkeypatch.setattr(shutil, "which", mock_which)
 
@@ -1282,7 +1285,7 @@ class TestDoctorCodexCliHintPlacement:
         monkeypatch.setattr(
             doctor_mod.shutil,
             "which",
-            lambda cmd: ("/usr/local/bin/codex" if codex_cli_present else None) if cmd == "codex" else real_which(cmd),
+            lambda cmd, path=None: ("/usr/local/bin/codex" if codex_cli_present else None) if cmd == "codex" else real_which(cmd),
         )
 
         buf = io.StringIO()

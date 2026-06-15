@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Set
 
 from hermes_cli.config import (
     cfg_get,
+    get_hermes_home,
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
@@ -834,34 +835,67 @@ def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
     if post_setup_key in {"agent_browser", "browserbase"}:
-        node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-        npm_bin = shutil.which("npm")
-        npx_bin = shutil.which("npx")
-        # Step 1: install the agent-browser npm package into node_modules/
-        if not node_modules.exists() and npm_bin:
-            _print_info("    Installing Node.js dependencies for browser tools...")
-            import subprocess
-            # Use the resolved npm_bin absolute path so subprocess.Popen can
-            # execute npm.cmd on Windows (CreateProcessW otherwise rejects
-            # batch shims).  On POSIX npm_bin is the plain path — same
-            # behaviour as before.
-            result = subprocess.run(
-                # --workspaces=false restricts the install to the repo root
-                # only, avoiding the apps/* glob which would pull in
-                # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
-                [npm_bin, "install", "--silent", "--workspaces=false"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-            )
-            if result.returncode == 0:
-                _print_success("    Node.js dependencies installed")
+        local_node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
+        # Check the same locations browser_tool.py::_find_agent_browser
+        # probes, not just PROJECT_ROOT/node_modules/. Otherwise hermes
+        # setup runs an unnecessary `npm install` in the source repo
+        # whenever agent-browser is already installed via Hermes-managed
+        # node (the default install lands at ~/.hermes/node/bin/, which
+        # is NOT on the user's PATH).
+        _ab_home = get_hermes_home()
+        _ab_candidate_dirs = (
+            str(_ab_home / "node" / "bin"),
+            str(_ab_home / "node" / "lib" / "node_modules"),
+            str(_ab_home / "node_modules" / ".bin"),
+        )
+        _ab_extended_path = os.pathsep.join(
+            d for d in _ab_candidate_dirs if Path(d).is_dir()
+        )
+        npm_bin = (
+            shutil.which("npm", path=_ab_extended_path) or shutil.which("npm")
+        )
+        npx_bin = (
+            shutil.which("npx", path=_ab_extended_path) or shutil.which("npx")
+        )
+        # agent-browser counts as "already available" if it's reachable
+        # from any of: local install, Hermes-managed node bin, global PATH,
+        # or npx (npx fetches from the npm registry on first use, which
+        # the downstream Chromium-install step at _run_post_setup already
+        # relies on as a fallback).
+        ab_already_available = bool(
+            local_node_modules.exists()
+            or shutil.which("agent-browser", path=_ab_extended_path)
+            or shutil.which("agent-browser")
+            or npx_bin
+        )
+
+        # Step 1: install the agent-browser npm package into node_modules/,
+        # UNLESS it's already accessible from another location.
+        if not local_node_modules.exists() and not ab_already_available:
+            if npm_bin:
+                _print_info("    Installing Node.js dependencies for browser tools...")
+                import subprocess
+                # Use the resolved npm_bin absolute path so subprocess.Popen can
+                # execute npm.cmd on Windows (CreateProcessW otherwise rejects
+                # batch shims).  On POSIX npm_bin is the plain path — same
+                # behaviour as before.
+                result = subprocess.run(
+                    # --workspaces=false restricts the install to the repo root
+                    # only, avoiding the apps/* glob which would pull in
+                    # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
+                    [npm_bin, "install", "--silent", "--workspaces=false"],
+                    capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                )
+                if result.returncode == 0:
+                    _print_success("    Node.js dependencies installed")
+                else:
+                    from hermes_constants import display_hermes_home
+                    _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
+                    if result.stderr:
+                        _print_info(f"      {result.stderr.strip()[:200]}")
             else:
-                from hermes_constants import display_hermes_home
-                _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
-                if result.stderr:
-                    _print_info(f"      {result.stderr.strip()[:200]}")
-        elif not node_modules.exists():
-            _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
-            return
+                _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
+                return
 
         # Step 2: only the local browser provider actually needs Chromium on
         # disk. Cloud providers (Browserbase, Browser Use, Firecrawl) host

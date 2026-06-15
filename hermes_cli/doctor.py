@@ -1473,14 +1473,39 @@ def run_doctor(args):
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")
-        # Check if agent-browser is installed
-        agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+        # Check if agent-browser is installed.
+        #
+        # Must search the same locations tools/browser_tool.py::_find_agent_browser
+        # probes, otherwise doctor false-negatives on Hermes-managed node installs
+        # (default install lands at ~/.hermes/node/bin/, which is NOT on the user's
+        # PATH — so a plain shutil.which() misses it). See _browser_candidate_path_dirs
+        # in tools/browser_tool.py for the canonical list.
+        agent_browser_path: Path | None = None
+        _ab_candidate_dirs = (
+            str(HERMES_HOME / "node" / "bin"),
+            str(HERMES_HOME / "node" / "lib" / "node_modules"),
+            str(HERMES_HOME / "node_modules" / ".bin"),
+        )
+        _ab_extended_path = os.pathsep.join(
+            d for d in _ab_candidate_dirs if Path(d).is_dir()
+        )
+        _ab_npx_path = (
+            shutil.which("npx", path=_ab_extended_path) or shutil.which("npx")
+        )
+
+        if (PROJECT_ROOT / "node_modules" / "agent-browser").exists():
+            agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+        else:
+            _ab_found = (
+                shutil.which("agent-browser", path=_ab_extended_path)
+                or shutil.which("agent-browser")
+            )
+            if _ab_found:
+                agent_browser_path = Path(_ab_found).parent
+
         agent_browser_ok = False
-        if agent_browser_path.exists():
-            check_ok("agent-browser (Node.js)", "(browser automation)")
-            agent_browser_ok = True
-        elif shutil.which("agent-browser"):
-            check_ok("agent-browser", "(browser automation)")
+        if agent_browser_path is not None:
+            check_ok("agent-browser (Node.js)", f"({agent_browser_path})")
             agent_browser_ok = True
         elif _is_termux():
             check_info("agent-browser is not installed (expected in the tested Termux path)")
@@ -1488,8 +1513,16 @@ def run_doctor(args):
             check_info("Termux browser setup:")
             for step in _termux_browser_setup_steps(node_installed=True):
                 check_info(step)
+        elif _ab_npx_path:
+            # npx can fetch agent-browser from the npm registry on first use;
+            # tools/browser_tool.py::_find_agent_browser relies on this fallback.
+            check_ok("agent-browser", "(npx will download on first browser tool use)")
+            agent_browser_ok = True
         else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+            check_warn(
+                "agent-browser not installed",
+                "(run: npm install -g agent-browser && agent-browser install --with-deps)",
+            )
 
         # Chromium presence — the browser tools silently fail to register when
         # agent-browser is found but no Playwright-managed Chromium is on disk
