@@ -83,6 +83,14 @@ const POLL_MS = 2500
 /** Stop polling after this many consecutive RPC failures (e.g. backend missing the pet module). */
 const MAX_CONSECUTIVE_FAILURES = 3
 
+// Module-scoped so the counter survives Pet component unmount/remount cycles.
+// A `useRef` would reset to 0 every time the parent re-mounts the hook on a
+// state change, defeating the backoff cap above — we'd poll forever, just
+// slower than before. Module scope = persistent across mounts of THIS module.
+// (If multiple Pet components ever coexist in one process, demote this to a
+// per-instance ref once we know that case actually matters.)
+let globalPetFailCount = 0
+
 // Only the standalone TUI owns a real terminal it can splat image escapes into;
 // when piped (or running under the dashboard PTY the gateway resolves to
 // half-blocks anyway) we never ask for graphics.
@@ -121,7 +129,6 @@ export function usePet(): PetRender {
   const imageIdRef = useRef(0)
   const stateRef = useRef<PetState>('idle')
   const frameRef = useRef(0)
-  const failCountRef = useRef(0)
 
   const [petState, setPetState] = useState<PetState>('idle')
 
@@ -199,7 +206,7 @@ export function usePet(): PetRender {
       // Back off after consecutive failures — the backend may not have the
       // pet module loaded (crash recovery, missing dependency) and retrying
       // every POLL_MS just floods the activity feed with RPC errors.
-      if (failCountRef.current >= MAX_CONSECUTIVE_FAILURES) {
+      if (globalPetFailCount >= MAX_CONSECUTIVE_FAILURES) {
         return
       }
 
@@ -213,12 +220,12 @@ export function usePet(): PetRender {
         // fail-open path never produces.
         const failed = !res || (res.enabled === false && !res.slug)
         if (failed) {
-          failCountRef.current += 1
+          globalPetFailCount += 1
           return
         }
 
         // Success — reset the failure counter.
-        failCountRef.current = 0
+        globalPetFailCount = 0
 
         if (!res.enabled) {
           releaseKitty()
@@ -264,7 +271,7 @@ export function usePet(): PetRender {
 
         setEnabled(true)
       } catch {
-        failCountRef.current += 1
+        globalPetFailCount += 1
       }
     },
     [rpc, releaseKitty]
